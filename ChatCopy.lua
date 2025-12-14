@@ -76,9 +76,11 @@ local function ChatCopy_ListChatWindowIds()
 	return ids
 end
 
-local function ChatCopy_PersistChatChanges(desiredCount)
-	for i = 1, desiredCount do
-		local chatFrame = _G["ChatFrame" .. i]
+
+local function ChatCopy_PersistChatChanges()
+	local ids = ChatCopy_ListChatWindowIds()
+	for _, windowId in ipairs(ids) do
+		local chatFrame = ChatCopy_GetChatFrameByWindowId(windowId)
 		if chatFrame then
 			if type(FCF_SavePositionAndDimensions) == "function" then
 				pcall(FCF_SavePositionAndDimensions, chatFrame)
@@ -97,9 +99,29 @@ local function ChatCopy_PersistChatChanges(desiredCount)
 end
 
 local function ChatCopy_ReadWindow(windowId)
-	local name = GetChatWindowInfo(windowId)
+	local name, infoFontSize = GetChatWindowInfo(windowId)
 	if not name then
 		return nil
+	end
+
+	local fontSize
+	if type(infoFontSize) == "number" then
+		fontSize = infoFontSize
+	end
+
+	local chatFrame = ChatCopy_GetChatFrameByWindowId(windowId)
+	if not fontSize and chatFrame and type(FCF_GetChatWindowFontSize) == "function" then
+		local ok, size = pcall(FCF_GetChatWindowFontSize, chatFrame)
+		if ok and type(size) == "number" then
+			fontSize = size
+		end
+	end
+	if chatFrame and chatFrame.GetFont then
+		local _, size = chatFrame:GetFont()
+		if type(size) == "number" then
+			-- Prefer the explicit chat-window font size if we have it.
+			fontSize = fontSize or size
+		end
 	end
 
 	local messageGroups = {}
@@ -133,9 +155,34 @@ local function ChatCopy_ReadWindow(windowId)
 	return {
 		windowId = windowId,
 		name = name,
+		fontSize = type(fontSize) == "number" and fontSize or nil,
 		messageGroups = messageGroups,
 		channels = channels,
 	}
+end
+
+local function ChatCopy_ApplyFontSize(chatFrame, fontSize)
+	if not chatFrame or type(fontSize) ~= "number" then
+		return
+	end
+
+	ChatCopy_Debug("Setting font size: frame='" .. tostring(chatFrame:GetName()) .. "' size=" .. tostring(fontSize))
+
+	if type(FCF_SetChatWindowFontSize) == "function" then
+		pcall(FCF_SetChatWindowFontSize, chatFrame, fontSize)
+	end
+
+	-- Some builds are more reliable if we also set the font directly.
+	if chatFrame.GetFont and chatFrame.SetFont then
+		local fontPath, _, flags = chatFrame:GetFont()
+		if fontPath then
+			pcall(chatFrame.SetFont, chatFrame, fontPath, fontSize, flags)
+		end
+	end
+
+	if type(FCF_SaveChatWindow) == "function" then
+		pcall(FCF_SaveChatWindow, chatFrame)
+	end
 end
 
 local function ChatCopy_IsPlaceholderName(name)
@@ -188,6 +235,8 @@ local function ChatCopy_ApplyToFrame(chatFrame, windowData)
 		return
 	end
 
+	ChatCopy_ApplyFontSize(chatFrame, windowData.fontSize)
+
 	if type(ChatFrame_RemoveAllMessageGroups) == "function" then
 		pcall(ChatFrame_RemoveAllMessageGroups, chatFrame)
 	end
@@ -236,6 +285,7 @@ local function ChatCopy_SnapshotCurrentCharacter()
 	for _, windowId in ipairs(windowIds) do
 		local data = ChatCopy_ReadWindow(windowId)
 		if data and ChatCopy_ShouldIncludeWindow(data) then
+			ChatCopy_Debug("Snapshot windowId=" .. tostring(windowId) .. " name='" .. tostring(data.name) .. "' fontSize=" .. tostring(data.fontSize))
 			table.insert(snapshot.windows, data)
 		end
 	end
@@ -299,7 +349,7 @@ local function ChatCopy_ApplyWindow(i, windowData)
 		return
 	end
 
-	ChatCopy_Debug("Applying window #" .. tostring(i) .. ": name='" .. tostring(windowData.name) .. "' groups=" .. tostring(type(windowData.messageGroups) == "table" and #windowData.messageGroups or 0) .. " channels=" .. tostring(type(windowData.channels) == "table" and #windowData.channels or 0))
+	ChatCopy_Debug("Applying window #" .. tostring(i) .. ": name='" .. tostring(windowData.name) .. "' fontSize=" .. tostring(windowData.fontSize) .. " groups=" .. tostring(type(windowData.messageGroups) == "table" and #windowData.messageGroups or 0) .. " channels=" .. tostring(type(windowData.channels) == "table" and #windowData.channels or 0))
 
 	ChatCopy_SetWindowName(i, windowData.name)
 
@@ -371,13 +421,20 @@ local function ChatCopy_ApplySnapshot(sourceKey)
 			if ok and newFrame then
 				ChatCopy_Debug("Created new tab: '" .. tostring(data.name) .. "'")
 				ChatCopy_ApplyToFrame(newFrame, data)
+				-- Reinforce font size after chat system finishes initializing the new frame.
+				ChatCopy_ApplyFontSize(newFrame, data.fontSize)
+				if C_Timer and C_Timer.After and type(data.fontSize) == "number" then
+					C_Timer.After(0, function()
+						ChatCopy_ApplyFontSize(newFrame, data.fontSize)
+					end)
+				end
 			else
 				ChatCopy_Debug("Failed to create tab via FCF_OpenNewWindow for '" .. tostring(data.name) .. "'")
 			end
 		end
 	end
 
-	ChatCopy_PersistChatChanges(10)
+	ChatCopy_PersistChatChanges()
 	ChatCopy_Debug("After apply windowIds: " .. table.concat(ChatCopy_ListChatWindowIds(), ","))
 
 	return true

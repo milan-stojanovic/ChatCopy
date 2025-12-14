@@ -11,6 +11,7 @@ It is intentionally small:
 ## What gets copied
 For each chat window/tab, ChatCopy copies:
 - Window/tab name
+- Window font size
 - Enabled message-group filters (e.g. SAY, GUILD, WHISPER, PARTY, INSTANCE_CHAT, etc.)
 - Enabled numbered chat channels per tab (best-effort, by channel name)
 
@@ -18,7 +19,6 @@ For each chat window/tab, ChatCopy copies:
 ChatCopy does **not** copy UI/visual layout settings, including:
 - Tab order positioning/docking rules beyond “recreate tabs”
 - Window size/position
-- Fonts
 - Chat bubbles/timestamps/other CVars
 
 ## How it works
