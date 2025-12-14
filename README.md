@@ -2,6 +2,8 @@
 
 ChatCopy is a minimal World of Warcraft addon that copies **chat tab/window configuration** (tabs + message filters + channels) between characters on the same account.
 
+Inspired by the Copybara addon.
+
 It is intentionally small:
 - One dropdown: **Copy From**
 - One button: **Apply** (then you confirm whether to reload)
@@ -46,4 +48,4 @@ ChatCopy does **not** copy UI/visual layout settings, including:
   - To enable: set `ChatCopyDB.debug = true` in your SavedVariables and reload.
 
 ## License
-Add your preferred license here (e.g., MIT). If you want, I can add a LICENSE file.
+MIT. See LICENSE.
