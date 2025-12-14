@@ -1,0 +1,8 @@
+## Interface: 110207
+## Title: ChatCopy
+## Notes: Copy chat window settings between characters on the same account.
+## Author: ChatCopy
+## Version: @project-version@
+## SavedVariables: ChatCopyDB
+
+ChatCopy.lua
