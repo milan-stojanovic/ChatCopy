@@ -995,17 +995,36 @@ local function ChatCopy_CreateOptionsPanel()
 	title:SetPoint("TOPLEFT", 16, -16)
 	title:SetText("ChatCopy")
 
+	local subtitle = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+	subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -6)
+	subtitle:SetText("Copy chat tabs, filters, and font sizes between characters.")
+
+	local sourceHeader = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+	sourceHeader:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -14)
+	sourceHeader:SetText("Source Character")
+
 	local label = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-	label:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -18)
+	label:SetPoint("TOPLEFT", sourceHeader, "BOTTOMLEFT", 0, -8)
 	label:SetText("Copy From")
 
 	local dropdown = CreateFrame("Frame", "ChatCopyCopyFromDropdown", panel, "UIDropDownMenuTemplate")
 	dropdown:SetPoint("TOPLEFT", label, "BOTTOMLEFT", -16, -6)
 	UIDropDownMenu_SetWidth(dropdown, 260)
+	local dropdownPlaceholder = "Select a character..."
+
+	local sourceHint = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+	sourceHint:SetPoint("TOPLEFT", dropdown, "BOTTOMLEFT", 16, -2)
+	sourceHint:SetWidth(420)
+	sourceHint:SetJustifyH("LEFT")
+	sourceHint:SetText("Characters appear here after you've logged into them once with ChatCopy enabled.")
+
+	local actionsHeader = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+	actionsHeader:SetPoint("TOPLEFT", sourceHint, "BOTTOMLEFT", 0, -16)
+	actionsHeader:SetText("Actions")
 
 	local applyBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
 	applyBtn:SetSize(140, 24)
-	applyBtn:SetPoint("TOPLEFT", dropdown, "BOTTOMLEFT", 16, -10)
+	applyBtn:SetPoint("TOPLEFT", actionsHeader, "BOTTOMLEFT", 0, -6)
 	applyBtn:SetText("Apply")
 	applyBtn:SetScript("OnClick", function()
 		if ChatCopy_ApplySnapshot(selectedSourceKey) then
@@ -1020,9 +1039,15 @@ local function ChatCopy_CreateOptionsPanel()
 		end
 	end)
 
+	local applyDesc = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+	applyDesc:SetPoint("TOPLEFT", applyBtn, "BOTTOMLEFT", 0, -2)
+	applyDesc:SetWidth(420)
+	applyDesc:SetJustifyH("LEFT")
+	applyDesc:SetText("Apply the selected character's chat tabs and filters to this character. Reload to finalize.")
+
 	local templateBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
 	templateBtn:SetSize(140, 24)
-	templateBtn:SetPoint("TOPLEFT", applyBtn, "BOTTOMLEFT", 0, -8)
+	templateBtn:SetPoint("TOPLEFT", applyDesc, "BOTTOMLEFT", 0, -10)
 	templateBtn:SetText("Apply Template")
 	templateBtn:SetScript("OnClick", function()
 		if ChatCopy_ApplyTemplate() then
@@ -1037,13 +1062,20 @@ local function ChatCopy_CreateOptionsPanel()
 		end
 	end)
 
+	local templateDesc = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+	templateDesc:SetPoint("TOPLEFT", templateBtn, "BOTTOMLEFT", 0, -2)
+	templateDesc:SetWidth(420)
+	templateDesc:SetJustifyH("LEFT")
+	templateDesc:SetText("Create General/Log/Whisper/Guild/Party tabs with common filters. Reload to finalize.")
+
 	local applyAllBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
 	applyAllBtn:SetSize(140, 24)
-	applyAllBtn:SetPoint("TOPLEFT", templateBtn, "BOTTOMLEFT", 0, -8)
+	applyAllBtn:SetPoint("TOPLEFT", templateDesc, "BOTTOMLEFT", 0, -10)
 	applyAllBtn:SetText("Apply to All")
 	applyAllBtn:SetScript("OnClick", function()
-		if ChatCopy_ApplySnapshotToAll(selectedSourceKey) then
-			ChatCopy_Print("Applied to current character. Other characters update on next login.")
+		local currentKey = ChatCopy_GetCharacterKey()
+		if ChatCopy_ApplySnapshotToAll(currentKey) then
+			ChatCopy_Print("Using this character as the source. Other characters update on next login.")
 			if StaticPopup_Show then
 				StaticPopup_Show("CHATCOPY_RELOAD_CONFIRM")
 			else
@@ -1051,6 +1083,12 @@ local function ChatCopy_CreateOptionsPanel()
 			end
 		end
 	end)
+
+	local applyAllDesc = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+	applyAllDesc:SetPoint("TOPLEFT", applyAllBtn, "BOTTOMLEFT", 0, -2)
+	applyAllDesc:SetWidth(420)
+	applyAllDesc:SetJustifyH("LEFT")
+	applyAllDesc:SetText("Use this character as the source and queue all saved characters to update on next login.")
 
 	local function Dropdown_OnClick(self)
 		selectedSourceKey = self.value
@@ -1072,11 +1110,19 @@ local function ChatCopy_CreateOptionsPanel()
 
 	panel.refresh = function()
 		local keys = ChatCopy_ListProfileKeys()
-		if not selectedSourceKey or selectedSourceKey == "" then
-			selectedSourceKey = keys[1]
+		local valid = {}
+		for _, k in ipairs(keys) do
+			valid[k] = true
+		end
+		if selectedSourceKey and not valid[selectedSourceKey] then
+			selectedSourceKey = nil
 		end
 		UIDropDownMenu_SetSelectedValue(dropdown, selectedSourceKey)
-		UIDropDownMenu_SetText(dropdown, selectedSourceKey or "")
+		if selectedSourceKey then
+			UIDropDownMenu_SetText(dropdown, selectedSourceKey)
+		else
+			UIDropDownMenu_SetText(dropdown, dropdownPlaceholder)
+		end
 	end
 
 	panel.OnShow = function()
