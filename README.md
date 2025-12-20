@@ -41,6 +41,10 @@ ChatCopy does **not** copy UI/visual layout settings, including:
 5. Select the source in **Copy From** and click **Apply**.
 6. Confirm the reload.
 
+### Apply Template
+
+The **Apply Template** button sets up a standard set of tabs (General / Combat Log / Whisper / Guild / Party) with common message filters, without copying from another character.
+
 ## Notes / limitations
 - Applying is blocked in combat (`InCombatLockdown()`).
 - Channel restoration is best-effort: if a channel cannot be joined (passworded/restricted), it may not be added.

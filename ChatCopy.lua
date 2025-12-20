@@ -23,6 +23,7 @@ local function ChatCopy_InitDB()
 	ChatCopyDB = ChatCopyDB or {}
 	ChatCopyDB.version = ChatCopyDB.version or 1
 	ChatCopyDB.profiles = ChatCopyDB.profiles or {}
+	ChatCopyDB.enforceFontSizes = ChatCopyDB.enforceFontSizes or {}
 	if ChatCopyDB.debug == nil then
 		ChatCopyDB.debug = false
 	end
@@ -32,6 +33,50 @@ local function ChatCopy_Debug(message)
 	if ChatCopyDB and ChatCopyDB.debug then
 		ChatCopy_Print("[debug] " .. tostring(message))
 	end
+end
+
+-- Forward declarations (Lua local functions are not visible before declaration)
+local ChatCopy_GetChatFrameByWindowId
+
+local function ChatCopy_NormalizeFontSize(size)
+	if type(size) ~= "number" then
+		return nil
+	end
+	if size <= 0 then
+		return nil
+	end
+	-- Most font sizes are effectively integers; round to avoid float noise.
+	local rounded = math.floor(size + 0.5)
+	if rounded <= 0 or rounded > 64 then
+		return nil
+	end
+	return rounded
+end
+
+local function ChatCopy_GetEditBoxForChatFrame(chatFrame)
+	if not chatFrame then
+		return nil
+	end
+	if chatFrame.editBox then
+		return chatFrame.editBox
+	end
+	if chatFrame.GetName then
+		local frameName = chatFrame:GetName()
+		if type(frameName) == "string" and frameName ~= "" then
+			local bySuffix = _G[frameName .. "EditBox"]
+			if bySuffix then
+				return bySuffix
+			end
+			local id = tonumber(frameName:match("^ChatFrame(%d+)$"))
+			if id then
+				local byId = _G["ChatFrame" .. tostring(id) .. "EditBox"]
+				if byId then
+					return byId
+				end
+			end
+		end
+	end
+	return _G.ChatFrame1EditBox
 end
 
 local function ChatCopy_ListChatWindowIds()
@@ -105,23 +150,54 @@ local function ChatCopy_ReadWindow(windowId)
 	end
 
 	local fontSize
-	if type(infoFontSize) == "number" then
-		fontSize = infoFontSize
-	end
+	fontSize = ChatCopy_NormalizeFontSize(infoFontSize)
+	local fcfFontSize
+	local frameFontSize
 
 	local chatFrame = ChatCopy_GetChatFrameByWindowId(windowId)
+	local editBoxFontSize
+	local editBox = ChatCopy_GetEditBoxForChatFrame(chatFrame) or _G["ChatFrame" .. tostring(windowId) .. "EditBox"]
+	if editBox and editBox.GetFont then
+		local _, size = editBox:GetFont()
+		editBoxFontSize = ChatCopy_NormalizeFontSize(size)
+	end
 	if not fontSize and chatFrame and type(FCF_GetChatWindowFontSize) == "function" then
-		local ok, size = pcall(FCF_GetChatWindowFontSize, chatFrame)
-		if ok and type(size) == "number" then
-			fontSize = size
+		-- Some clients accept a frame, others accept a windowId.
+		local ok1, size1 = pcall(FCF_GetChatWindowFontSize, chatFrame)
+		if ok1 then
+			fcfFontSize = ChatCopy_NormalizeFontSize(size1)
 		end
+		if not fcfFontSize then
+			local ok2, size2 = pcall(FCF_GetChatWindowFontSize, windowId)
+			if ok2 then
+				fcfFontSize = ChatCopy_NormalizeFontSize(size2)
+			end
+		end
+		fontSize = fcfFontSize
 	end
 	if chatFrame and chatFrame.GetFont then
 		local _, size = chatFrame:GetFont()
-		if type(size) == "number" then
-			-- Prefer the explicit chat-window font size if we have it.
-			fontSize = fontSize or size
-		end
+		frameFontSize = ChatCopy_NormalizeFontSize(size)
+		fontSize = fontSize or frameFontSize
+	end
+
+	if ChatCopyDB and ChatCopyDB.debug then
+		ChatCopy_Debug(
+			"Capture font size: windowId="
+				.. tostring(windowId)
+				.. " name='"
+				.. tostring(name)
+				.. "' info="
+				.. tostring(infoFontSize)
+				.. " fcf="
+				.. tostring(fcfFontSize)
+				.. " frame="
+				.. tostring(frameFontSize)
+				.. " editBox="
+				.. tostring(editBoxFontSize)
+				.. " chosen="
+				.. tostring(fontSize)
+		)
 	end
 
 	local messageGroups = {}
@@ -155,14 +231,51 @@ local function ChatCopy_ReadWindow(windowId)
 	return {
 		windowId = windowId,
 		name = name,
-		fontSize = type(fontSize) == "number" and fontSize or nil,
+		fontSize = fontSize,
+		editBoxFontSize = editBoxFontSize,
 		messageGroups = messageGroups,
 		channels = channels,
 	}
 end
 
+local function ChatCopy_ApplyEditBoxFontSize(chatFrame, fontSize)
+	fontSize = ChatCopy_NormalizeFontSize(fontSize)
+	if not chatFrame or not fontSize then
+		return
+	end
+
+	local editBox = ChatCopy_GetEditBoxForChatFrame(chatFrame)
+	if not editBox or not editBox.GetFont or not editBox.SetFont then
+		return
+	end
+
+	local fontPath, _, flags = editBox:GetFont()
+	if not fontPath then
+		return
+	end
+
+	ChatCopy_Debug(
+		"Setting input font size: frame='"
+			.. tostring(chatFrame.GetName and chatFrame:GetName() or "?")
+			.. "' size="
+			.. tostring(fontSize)
+	)
+	pcall(editBox.SetFont, editBox, fontPath, fontSize, flags)
+
+	if ChatCopyDB and ChatCopyDB.debug and editBox.GetFont then
+		local _, appliedSize = editBox:GetFont()
+		ChatCopy_Debug(
+			"Input font size after set: frame='"
+				.. tostring(chatFrame.GetName and chatFrame:GetName() or "?")
+				.. "' size="
+				.. tostring(appliedSize)
+		)
+	end
+end
+
 local function ChatCopy_ApplyFontSize(chatFrame, fontSize)
-	if not chatFrame or type(fontSize) ~= "number" then
+	fontSize = ChatCopy_NormalizeFontSize(fontSize)
+	if not chatFrame or not fontSize then
 		return
 	end
 
@@ -170,6 +283,14 @@ local function ChatCopy_ApplyFontSize(chatFrame, fontSize)
 
 	if type(FCF_SetChatWindowFontSize) == "function" then
 		pcall(FCF_SetChatWindowFontSize, chatFrame, fontSize)
+	end
+
+	-- Some builds persist this via a windowId-based setter.
+	if type(SetChatWindowFontSize) == "function" and chatFrame.GetID then
+		local windowId = chatFrame:GetID()
+		if type(windowId) == "number" and windowId > 0 then
+			pcall(SetChatWindowFontSize, windowId, fontSize)
+		end
 	end
 
 	-- Some builds are more reliable if we also set the font directly.
@@ -182,6 +303,26 @@ local function ChatCopy_ApplyFontSize(chatFrame, fontSize)
 
 	if type(FCF_SaveChatWindow) == "function" then
 		pcall(FCF_SaveChatWindow, chatFrame)
+	end
+
+	if ChatCopyDB and ChatCopyDB.debug and chatFrame.GetFont then
+		local _, appliedSize = chatFrame:GetFont()
+		ChatCopy_Debug("Font size after set: frame='" .. tostring(chatFrame:GetName()) .. "' size=" .. tostring(appliedSize))
+	end
+
+	-- Extra safety: some settings only persist if saved after the frame has settled.
+	if C_Timer and C_Timer.After then
+		C_Timer.After(0, function()
+			if type(FCF_SaveChatWindow) == "function" then
+				pcall(FCF_SaveChatWindow, chatFrame)
+			end
+			if type(FCF_SaveDock) == "function" then
+				pcall(FCF_SaveDock)
+			end
+			if type(FCF_SaveChatWindows) == "function" then
+				pcall(FCF_SaveChatWindows)
+			end
+		end)
 	end
 end
 
@@ -208,7 +349,8 @@ local function ChatCopy_ShouldIncludeWindow(windowData)
 	return true
 end
 
-local function ChatCopy_GetChatFrameByWindowId(windowId)
+
+ChatCopy_GetChatFrameByWindowId = function(windowId)
 	if type(FCF_GetChatFrameByID) == "function" then
 		local ok, frame = pcall(FCF_GetChatFrameByID, windowId)
 		if ok and frame then
@@ -234,8 +376,6 @@ local function ChatCopy_ApplyToFrame(chatFrame, windowData)
 	if not chatFrame or type(windowData) ~= "table" then
 		return
 	end
-
-	ChatCopy_ApplyFontSize(chatFrame, windowData.fontSize)
 
 	if type(ChatFrame_RemoveAllMessageGroups) == "function" then
 		pcall(ChatFrame_RemoveAllMessageGroups, chatFrame)
@@ -266,6 +406,51 @@ local function ChatCopy_ApplyToFrame(chatFrame, windowData)
 			end
 		end
 	end
+
+	-- Apply font size last; some chat frame updates can reset it.
+	ChatCopy_ApplyFontSize(chatFrame, windowData.fontSize)
+	ChatCopy_ApplyEditBoxFontSize(chatFrame, windowData.editBoxFontSize)
+end
+
+local function ChatCopy_ReapplyFontSizesFromSnapshot(sourceKey)
+	ChatCopy_InitDB()
+	local snapshot = ChatCopyDB.profiles and ChatCopyDB.profiles[sourceKey]
+	if type(snapshot) ~= "table" or type(snapshot.windows) ~= "table" then
+		return false
+	end
+
+	local currentIds = ChatCopy_ListChatWindowIds()
+	local idByName = {}
+	for _, windowId in ipairs(currentIds) do
+		local name = GetChatWindowInfo(windowId)
+		if type(name) == "string" and name ~= "" and not idByName[name] then
+			idByName[name] = windowId
+		end
+	end
+
+	for idx, data in ipairs(snapshot.windows) do
+		if type(data) == "table" and (type(data.fontSize) == "number" or type(data.editBoxFontSize) == "number") then
+			local targetId = idByName[data.name]
+			-- Fallback: first two windows are always 1/2, and subsequent windows follow creation order.
+			if not targetId then
+				if idx == 1 then
+					targetId = 1
+				elseif idx == 2 then
+					targetId = 2
+				else
+					targetId = idx
+				end
+			end
+			local frame = ChatCopy_GetChatFrameByWindowId(targetId)
+			if frame then
+				ChatCopy_ApplyFontSize(frame, data.fontSize)
+				ChatCopy_ApplyEditBoxFontSize(frame, data.editBoxFontSize)
+			end
+		end
+	end
+
+	ChatCopy_PersistChatChanges()
+	return true
 end
 
 local function ChatCopy_SnapshotCurrentCharacter()
@@ -285,13 +470,23 @@ local function ChatCopy_SnapshotCurrentCharacter()
 	for _, windowId in ipairs(windowIds) do
 		local data = ChatCopy_ReadWindow(windowId)
 		if data and ChatCopy_ShouldIncludeWindow(data) then
-			ChatCopy_Debug("Snapshot windowId=" .. tostring(windowId) .. " name='" .. tostring(data.name) .. "' fontSize=" .. tostring(data.fontSize))
+			ChatCopy_Debug(
+				"Snapshot windowId="
+					.. tostring(windowId)
+					.. " name='"
+					.. tostring(data.name)
+					.. "' fontSize="
+					.. tostring(data.fontSize)
+					.. " inputFontSize="
+					.. tostring(data.editBoxFontSize)
+			)
 			table.insert(snapshot.windows, data)
 		end
 	end
 	snapshot.windowCount = #snapshot.windows
 
 	ChatCopyDB.profiles[profileKey] = snapshot
+	ChatCopy_Debug("Snapshot saved: key=" .. tostring(profileKey) .. " windows=" .. tostring(snapshot.windowCount))
 end
 
 local function ChatCopy_CloseExtraWindows(desiredCount)
@@ -349,7 +544,15 @@ local function ChatCopy_ApplyWindow(i, windowData)
 		return
 	end
 
-	ChatCopy_Debug("Applying window #" .. tostring(i) .. ": name='" .. tostring(windowData.name) .. "' fontSize=" .. tostring(windowData.fontSize) .. " groups=" .. tostring(type(windowData.messageGroups) == "table" and #windowData.messageGroups or 0) .. " channels=" .. tostring(type(windowData.channels) == "table" and #windowData.channels or 0))
+	local normalizedFont = ChatCopy_NormalizeFontSize(windowData.fontSize)
+	ChatCopy_Debug(
+		"Applying window #" .. tostring(i)
+			.. ": name='" .. tostring(windowData.name)
+			.. "' fontSize=" .. tostring(windowData.fontSize)
+			.. " (normalized=" .. tostring(normalizedFont) .. ")"
+			.. " groups=" .. tostring(type(windowData.messageGroups) == "table" and #windowData.messageGroups or 0)
+			.. " channels=" .. tostring(type(windowData.channels) == "table" and #windowData.channels or 0)
+	)
 
 	ChatCopy_SetWindowName(i, windowData.name)
 
@@ -414,9 +617,18 @@ local function ChatCopy_ApplySnapshot(sourceKey)
 		end
 	end
 
+	if desiredCount > 2 and type(FCF_OpenNewWindow) ~= "function" then
+		ChatCopy_Print("Cannot create chat tabs (FCF_OpenNewWindow missing).")
+		return false
+	end
+
 	for idx = 3, desiredCount do
 		local data = snapshot.windows[idx]
 		if type(data) == "table" then
+			local normalizedFont = ChatCopy_NormalizeFontSize(data.fontSize)
+			if not normalizedFont then
+				ChatCopy_Debug("Creating tab '" .. tostring(data.name) .. "' with no saved font size (fontSize=" .. tostring(data.fontSize) .. ")")
+			end
 			local ok, newFrame = pcall(FCF_OpenNewWindow, tostring(data.name))
 			if ok and newFrame then
 				ChatCopy_Debug("Created new tab: '" .. tostring(data.name) .. "'")
@@ -437,6 +649,172 @@ local function ChatCopy_ApplySnapshot(sourceKey)
 	ChatCopy_PersistChatChanges()
 	ChatCopy_Debug("After apply windowIds: " .. table.concat(ChatCopy_ListChatWindowIds(), ","))
 
+	-- Save a snapshot for the *target* character too, so we can reapply font sizes on future reloads if the client resets them.
+	pcall(ChatCopy_SnapshotCurrentCharacter)
+
+	return true
+end
+
+local function ChatCopy_GetAllMessageGroups()
+	local groups = {}
+	local ignore = {
+		CHANNEL = true,
+		CHANNEL_JOIN = true,
+		CHANNEL_LEAVE = true,
+		CHANNEL_NOTICE = true,
+		CHANNEL_NOTICE_USER = true,
+		IGNORED = true,
+		DND = true,
+		AFK = true,
+	}
+
+	if type(ChatTypeGroup) == "table" then
+		for chatType in pairs(ChatTypeGroup) do
+			if type(chatType) == "string" and not ignore[chatType] then
+				groups[chatType] = true
+			end
+		end
+	end
+
+	-- Fallback: union of known groups from the chat config UI tables, if present.
+	if next(groups) == nil and type(CHAT_CONFIG_CHAT_LEFT) == "table" then
+		for _, entry in ipairs(CHAT_CONFIG_CHAT_LEFT) do
+			if type(entry) == "table" and type(entry.type) == "string" and entry.type ~= "" then
+				groups[entry.type] = true
+			end
+		end
+	end
+
+	local list = {}
+	for k in pairs(groups) do
+		table.insert(list, k)
+	end
+	table.sort(list)
+	return list
+end
+
+local function ChatCopy_ApplyTemplate()
+	ChatCopy_InitDB()
+
+	if InCombatLockdown and InCombatLockdown() then
+		ChatCopy_Print("Cannot apply in combat.")
+		return false
+	end
+
+	local templateFontSize = 13
+	local template = {
+		-- window #1: General (everything)
+		{
+			name = "General",
+			fontSize = templateFontSize,
+			editBoxFontSize = templateFontSize,
+			messageGroups = ChatCopy_GetAllMessageGroups(),
+			channels = {},
+		},
+		-- window #2: Combat Log (do not change)
+		{
+			keep = true,
+			name = "Log",
+			fontSize = templateFontSize,
+			editBoxFontSize = templateFontSize,
+		},
+		-- window #3: Whisper (only whispers)
+		{
+			name = "Whisper",
+			fontSize = templateFontSize,
+			editBoxFontSize = templateFontSize,
+			messageGroups = {
+				"WHISPER",
+				"WHISPER_INFORM",
+				"BN_WHISPER",
+				"BN_WHISPER_INFORM",
+			},
+			channels = {},
+		},
+		-- window #4: Guild
+		{
+			name = "Guild",
+			fontSize = templateFontSize,
+			editBoxFontSize = templateFontSize,
+			messageGroups = {
+				"GUILD",
+				"OFFICER",
+				"GUILD_ACHIEVEMENT",
+				"GUILD_ANNOUNCEMENT",
+			},
+			channels = {},
+		},
+		-- window #5: Party/Raid/Instance
+		{
+			name = "Party",
+			fontSize = templateFontSize,
+			editBoxFontSize = templateFontSize,
+			messageGroups = {
+				"PARTY",
+				"PARTY_LEADER",
+				"RAID",
+				"RAID_LEADER",
+				"RAID_WARNING",
+				"INSTANCE_CHAT",
+				"INSTANCE_CHAT_LEADER",
+			},
+			channels = {},
+		},
+	}
+
+	ChatCopy_Debug("Applying built-in template")
+
+	-- Remove existing custom tabs so the template tabs become visible.
+	local currentIds = ChatCopy_ListChatWindowIds()
+	local maxId = currentIds[#currentIds] or 0
+	for windowId = maxId, 3, -1 do
+		local name = GetChatWindowInfo(windowId)
+		if name and name ~= "" and name ~= "Voice" and not ChatCopy_IsPlaceholderName(name) then
+			local frame = ChatCopy_GetChatFrameByWindowId(windowId)
+			if frame and type(FCF_Close) == "function" then
+				ChatCopy_Debug("Closing existing tab windowId=" .. tostring(windowId) .. " name='" .. tostring(name) .. "'")
+				pcall(FCF_Close, frame)
+			elseif frame and type(FCF_CloseWindow) == "function" then
+				ChatCopy_Debug("Closing existing tab windowId=" .. tostring(windowId) .. " name='" .. tostring(name) .. "'")
+				pcall(FCF_CloseWindow, frame)
+			end
+		end
+	end
+
+	-- Apply General (1)
+	ChatCopy_ApplyWindow(1, template[1])
+
+	-- Combat Log (2): keep filters, but enforce name/font sizes.
+	local combatLogData = template[2]
+	local combatLogFrame = ChatCopy_GetChatFrameByWindowId(2)
+	if type(combatLogData) == "table" then
+		ChatCopy_SetWindowName(2, combatLogData.name)
+		if combatLogFrame then
+			ChatCopy_ApplyFontSize(combatLogFrame, combatLogData.fontSize)
+			ChatCopy_ApplyEditBoxFontSize(combatLogFrame, combatLogData.editBoxFontSize)
+		end
+	end
+
+	-- Create and configure Whisper/Guild/Party tabs
+	for idx = 3, #template do
+		local data = template[idx]
+		if type(data) == "table" and type(data.name) == "string" then
+			if type(FCF_OpenNewWindow) ~= "function" then
+				ChatCopy_Print("Cannot create chat tabs (FCF_OpenNewWindow missing).")
+				return false
+			end
+			local ok, newFrame = pcall(FCF_OpenNewWindow, tostring(data.name))
+			if ok and newFrame then
+				ChatCopy_Debug("Created template tab: '" .. tostring(data.name) .. "'")
+				ChatCopy_ApplyToFrame(newFrame, data)
+			else
+				ChatCopy_Debug("Failed to create template tab via FCF_OpenNewWindow for '" .. tostring(data.name) .. "'")
+			end
+		end
+	end
+
+	ChatCopy_PersistChatChanges()
+	pcall(ChatCopy_SnapshotCurrentCharacter)
 	return true
 end
 
@@ -477,7 +855,31 @@ local function ChatCopy_CreateOptionsPanel()
 	applyBtn:SetText("Apply")
 	applyBtn:SetScript("OnClick", function()
 		if ChatCopy_ApplySnapshot(selectedSourceKey) then
+			local targetKey = ChatCopy_GetCharacterKey()
+			ChatCopyDB.pendingApply = {
+				targetKey = targetKey,
+				sourceKey = selectedSourceKey,
+				createdAt = time and time() or nil,
+			}
+			ChatCopyDB.enforceFontSizes[targetKey] = true
 			ChatCopy_Print("Applied. Reload UI to finalize?")
+			if StaticPopup_Show then
+				StaticPopup_Show("CHATCOPY_RELOAD_CONFIRM")
+			else
+				ChatCopy_Print("Type /reload to finalize.")
+			end
+		end
+	end)
+
+	local templateBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+	templateBtn:SetSize(140, 24)
+	templateBtn:SetPoint("TOPLEFT", applyBtn, "BOTTOMLEFT", 0, -8)
+	templateBtn:SetText("Apply Template")
+	templateBtn:SetScript("OnClick", function()
+		if ChatCopy_ApplyTemplate() then
+			local targetKey = ChatCopy_GetCharacterKey()
+			ChatCopyDB.enforceFontSizes[targetKey] = true
+			ChatCopy_Print("Template applied. Reload UI to finalize?")
 			if StaticPopup_Show then
 				StaticPopup_Show("CHATCOPY_RELOAD_CONFIRM")
 			else
@@ -566,8 +968,71 @@ eventFrame:SetScript("OnEvent", function(_, event)
 		if optionsPanel.refresh then
 			optionsPanel.refresh()
 		end
+
+		-- Refresh this character's snapshot after chat initializes so saved data stays current.
+		-- This avoids applying stale snapshots (e.g., older saved fontSize=0 values).
+		if C_Timer and C_Timer.After then
+			if ChatCopyDB and ChatCopyDB.debug then
+				ChatCopy_Print("[debug] Auto-snapshot will run in 2s")
+			end
+			C_Timer.After(2, function()
+				local ok, err = pcall(ChatCopy_SnapshotCurrentCharacter)
+				if ChatCopyDB and ChatCopyDB.debug then
+					ChatCopy_Print("[debug] Auto-snapshot finished (ok=" .. tostring(ok) .. ")")
+					if not ok then
+						ChatCopy_Print("[debug] Auto-snapshot error: " .. tostring(err))
+					end
+				end
+			end)
+		end
+
+		-- Brand new characters can have chat defaults re-applied during reload/login.
+		-- If we just applied settings and the user reloaded, re-apply font sizes once after chat initializes.
+		local pending = ChatCopyDB and ChatCopyDB.pendingApply
+		local currentKey = ChatCopy_GetCharacterKey()
+
+		-- If this character ever used Apply, keep font sizes stable across future reloads.
+		if ChatCopyDB and ChatCopyDB.enforceFontSizes and ChatCopyDB.enforceFontSizes[currentKey] then
+			ChatCopy_Debug("Font enforcement enabled; will reapply font sizes from this character's snapshot")
+			if C_Timer and C_Timer.After then
+				C_Timer.After(0.5, function()
+					local ok, err = pcall(ChatCopy_ReapplyFontSizesFromSnapshot, currentKey)
+					if ChatCopyDB and ChatCopyDB.debug then
+						ChatCopy_Debug("Enforced font sizes (ok=" .. tostring(ok) .. ")")
+						if not ok then
+							ChatCopy_Debug("Enforce font sizes error: " .. tostring(err))
+						end
+					end
+				end)
+			else
+				pcall(ChatCopy_ReapplyFontSizesFromSnapshot, currentKey)
+			end
+		end
+
+		if type(pending) == "table" and pending.targetKey == currentKey and type(pending.sourceKey) == "string" then
+			local sourceKey = pending.sourceKey
+			ChatCopy_Debug("Pending apply detected; will reapply font sizes from: " .. tostring(sourceKey))
+			if C_Timer and C_Timer.After then
+				C_Timer.After(0.5, function()
+					local ok, err = pcall(ChatCopy_ReapplyFontSizesFromSnapshot, sourceKey)
+					ChatCopyDB.pendingApply = nil
+					if ChatCopyDB and ChatCopyDB.debug then
+						ChatCopy_Debug("Pending font size reapply complete (ok=" .. tostring(ok) .. ")")
+						if not ok then
+							ChatCopy_Debug("Pending font size reapply error: " .. tostring(err))
+						end
+					end
+				end)
+			else
+				pcall(ChatCopy_ReapplyFontSizesFromSnapshot, sourceKey)
+				ChatCopyDB.pendingApply = nil
+			end
+		end
 	elseif event == "PLAYER_LOGOUT" then
 		-- Keep this quiet and minimal: snapshot so other characters can copy from it.
-		pcall(ChatCopy_SnapshotCurrentCharacter)
+		local ok, err = pcall(ChatCopy_SnapshotCurrentCharacter)
+		if ChatCopyDB and ChatCopyDB.debug and not ok then
+			ChatCopy_Print("[debug] Logout snapshot error: " .. tostring(err))
+		end
 	end
 end)
