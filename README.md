@@ -45,6 +45,10 @@ ChatCopy does **not** copy UI/visual layout settings, including:
 
 The **Apply Template** button sets up a standard set of tabs (General / Combat Log / Whisper / Guild / Party) with common message filters, without copying from another character.
 
+### Apply to All
+
+The **Apply to All** button applies the selected character's chat setup to your current character immediately, and flags all saved characters so they will get the same settings the next time they log in. Characters that have never logged in with ChatCopy won't be updated until they do.
+
 ## Notes / limitations
 - Applying is blocked in combat (`InCombatLockdown()`).
 - Channel restoration is best-effort: if a channel cannot be joined (passworded/restricted), it may not be added.

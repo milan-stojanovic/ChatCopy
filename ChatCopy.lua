@@ -409,7 +409,7 @@ local function ChatCopy_ApplyToFrame(chatFrame, windowData)
 
 	-- Apply font size last; some chat frame updates can reset it.
 	ChatCopy_ApplyFontSize(chatFrame, windowData.fontSize)
-	ChatCopy_ApplyEditBoxFontSize(chatFrame, windowData.editBoxFontSize)
+	ChatCopy_ApplyEditBoxFontSize(chatFrame, windowData.editBoxFontSize or windowData.fontSize)
 end
 
 local function ChatCopy_ReapplyFontSizesFromSnapshot(sourceKey)
@@ -450,6 +450,160 @@ local function ChatCopy_ReapplyFontSizesFromSnapshot(sourceKey)
 	end
 
 	ChatCopy_PersistChatChanges()
+	return true
+end
+
+local function ChatCopy_ReapplyWindowDataFromSnapshot(sourceKey)
+	ChatCopy_InitDB()
+	local snapshot = ChatCopyDB.profiles and ChatCopyDB.profiles[sourceKey]
+	if type(snapshot) ~= "table" or type(snapshot.windows) ~= "table" then
+		return false
+	end
+
+	local currentIds = ChatCopy_ListChatWindowIds()
+	local idByName = {}
+	for _, windowId in ipairs(currentIds) do
+		local name = GetChatWindowInfo(windowId)
+		if type(name) == "string" and name ~= "" and not idByName[name] then
+			idByName[name] = windowId
+		end
+	end
+
+	for idx, data in ipairs(snapshot.windows) do
+		if type(data) == "table" then
+			local targetId = idByName[data.name]
+			-- Fallback: first two windows are always 1/2, and subsequent windows follow creation order.
+			if not targetId then
+				if idx == 1 then
+					targetId = 1
+				elseif idx == 2 then
+					targetId = 2
+				else
+					targetId = idx
+				end
+			end
+			local frame = ChatCopy_GetChatFrameByWindowId(targetId)
+			if frame then
+				ChatCopy_SetWindowName(targetId, data.name)
+				ChatCopy_ApplyToFrame(frame, data)
+			end
+		end
+	end
+
+	ChatCopy_PersistChatChanges()
+	return true
+end
+
+local function ChatCopy_RecordApplyForTarget(targetKey, sourceKey)
+	if type(targetKey) ~= "string" or targetKey == "" then
+		return
+	end
+	ChatCopyDB.pendingApply = {
+		targetKey = targetKey,
+		sourceKey = sourceKey,
+		createdAt = time and time() or nil,
+	}
+	ChatCopyDB.enforceFontSizes[targetKey] = true
+end
+
+local function ChatCopy_BuildApplyAllTargets()
+	local targets = {}
+	local keys = ChatCopy_ListProfileKeys()
+	for _, key in ipairs(keys) do
+		targets[key] = true
+	end
+	local currentKey = ChatCopy_GetCharacterKey()
+	if type(currentKey) == "string" and currentKey ~= "" then
+		targets[currentKey] = true
+	end
+	return targets
+end
+
+local function ChatCopy_MarkApplyAllComplete(pendingAll, targetKey)
+	if type(pendingAll) ~= "table" or type(targetKey) ~= "string" then
+		return
+	end
+	local targets = pendingAll.targets
+	if type(targets) == "table" then
+		targets[targetKey] = nil
+		if not next(targets) then
+			ChatCopyDB.pendingApplyAll = nil
+		end
+	end
+end
+
+local function ChatCopy_ApplySnapshotToAll(sourceKey)
+	ChatCopy_InitDB()
+	if type(sourceKey) ~= "string" or sourceKey == "" then
+		ChatCopy_Print("Select a character in 'Copy From'.")
+		return false
+	end
+
+	local currentKey = ChatCopy_GetCharacterKey()
+	if sourceKey == currentKey then
+		pcall(ChatCopy_SnapshotCurrentCharacter)
+	end
+
+	local snapshot = ChatCopyDB.profiles and ChatCopyDB.profiles[sourceKey]
+	if type(snapshot) ~= "table" or type(snapshot.windows) ~= "table" then
+		ChatCopy_Print("No saved chat settings found for: " .. tostring(sourceKey))
+		return false
+	end
+
+	local ok = ChatCopy_ApplySnapshot(sourceKey)
+	if not ok then
+		return false
+	end
+
+	local targets = ChatCopy_BuildApplyAllTargets()
+	ChatCopyDB.pendingApplyAll = {
+		sourceKey = sourceKey,
+		createdAt = time and time() or nil,
+		targets = targets,
+	}
+
+	local targetKey = currentKey
+	ChatCopy_RecordApplyForTarget(targetKey, sourceKey)
+	ChatCopy_MarkApplyAllComplete(ChatCopyDB.pendingApplyAll, targetKey)
+	return true
+end
+
+local function ChatCopy_HandlePendingApplyAll(currentKey)
+	local pendingAll = ChatCopyDB and ChatCopyDB.pendingApplyAll
+	if type(pendingAll) ~= "table" or type(pendingAll.sourceKey) ~= "string" then
+		return false
+	end
+	local targets = pendingAll.targets
+	if type(targets) == "table" and not targets[currentKey] then
+		return false
+	end
+	if currentKey == pendingAll.sourceKey then
+		ChatCopy_MarkApplyAllComplete(pendingAll, currentKey)
+		return false
+	end
+
+	local function applyNow()
+		local ok = ChatCopy_ApplySnapshot(pendingAll.sourceKey)
+		if ok then
+			ChatCopy_RecordApplyForTarget(currentKey, pendingAll.sourceKey)
+			ChatCopy_MarkApplyAllComplete(pendingAll, currentKey)
+			local function reapply()
+				pcall(ChatCopy_ReapplyWindowDataFromSnapshot, pendingAll.sourceKey)
+			end
+			if C_Timer and C_Timer.After then
+				C_Timer.After(0.5, reapply)
+			else
+				reapply()
+			end
+		end
+	end
+
+	if C_Timer and C_Timer.After then
+		C_Timer.After(1, applyNow)
+	else
+		applyNow()
+	end
+
 	return true
 end
 
@@ -856,12 +1010,7 @@ local function ChatCopy_CreateOptionsPanel()
 	applyBtn:SetScript("OnClick", function()
 		if ChatCopy_ApplySnapshot(selectedSourceKey) then
 			local targetKey = ChatCopy_GetCharacterKey()
-			ChatCopyDB.pendingApply = {
-				targetKey = targetKey,
-				sourceKey = selectedSourceKey,
-				createdAt = time and time() or nil,
-			}
-			ChatCopyDB.enforceFontSizes[targetKey] = true
+			ChatCopy_RecordApplyForTarget(targetKey, selectedSourceKey)
 			ChatCopy_Print("Applied. Reload UI to finalize?")
 			if StaticPopup_Show then
 				StaticPopup_Show("CHATCOPY_RELOAD_CONFIRM")
@@ -880,6 +1029,21 @@ local function ChatCopy_CreateOptionsPanel()
 			local targetKey = ChatCopy_GetCharacterKey()
 			ChatCopyDB.enforceFontSizes[targetKey] = true
 			ChatCopy_Print("Template applied. Reload UI to finalize?")
+			if StaticPopup_Show then
+				StaticPopup_Show("CHATCOPY_RELOAD_CONFIRM")
+			else
+				ChatCopy_Print("Type /reload to finalize.")
+			end
+		end
+	end)
+
+	local applyAllBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+	applyAllBtn:SetSize(140, 24)
+	applyAllBtn:SetPoint("TOPLEFT", templateBtn, "BOTTOMLEFT", 0, -8)
+	applyAllBtn:SetText("Apply to All")
+	applyAllBtn:SetScript("OnClick", function()
+		if ChatCopy_ApplySnapshotToAll(selectedSourceKey) then
+			ChatCopy_Print("Applied to current character. Other characters update on next login.")
 			if StaticPopup_Show then
 				StaticPopup_Show("CHATCOPY_RELOAD_CONFIRM")
 			else
@@ -991,8 +1155,10 @@ eventFrame:SetScript("OnEvent", function(_, event)
 		local pending = ChatCopyDB and ChatCopyDB.pendingApply
 		local currentKey = ChatCopy_GetCharacterKey()
 
+		local applyAllScheduled = ChatCopy_HandlePendingApplyAll(currentKey)
+
 		-- If this character ever used Apply, keep font sizes stable across future reloads.
-		if ChatCopyDB and ChatCopyDB.enforceFontSizes and ChatCopyDB.enforceFontSizes[currentKey] then
+		if not applyAllScheduled and ChatCopyDB and ChatCopyDB.enforceFontSizes and ChatCopyDB.enforceFontSizes[currentKey] then
 			ChatCopy_Debug("Font enforcement enabled; will reapply font sizes from this character's snapshot")
 			if C_Timer and C_Timer.After then
 				C_Timer.After(0.5, function()
@@ -1009,7 +1175,7 @@ eventFrame:SetScript("OnEvent", function(_, event)
 			end
 		end
 
-		if type(pending) == "table" and pending.targetKey == currentKey and type(pending.sourceKey) == "string" then
+		if not applyAllScheduled and type(pending) == "table" and pending.targetKey == currentKey and type(pending.sourceKey) == "string" then
 			local sourceKey = pending.sourceKey
 			ChatCopy_Debug("Pending apply detected; will reapply font sizes from: " .. tostring(sourceKey))
 			if C_Timer and C_Timer.After then
