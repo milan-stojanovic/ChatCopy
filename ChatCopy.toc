@@ -4,5 +4,6 @@
 ## Author: ChatCopy
 ## Version: @project-version@
 ## SavedVariables: ChatCopyDB
+## X-Curse-Project-ID: 1404526
 
 ChatCopy.lua
